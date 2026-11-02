@@ -2470,6 +2470,7 @@ async def relay_nvidia_nim_request(
             user_api_key_dict=user_api_key_dict,
         ),
         ping_interval_seconds=(litellm.sse_keepalive_ping_interval_seconds if is_streaming_request else None),
+    request=request,
     )
 
 
@@ -2499,6 +2500,7 @@ async def _relay_azure_body_model_group(
             user_api_key_dict=user_api_key_dict,
         ),
         ping_interval_seconds=(litellm.sse_keepalive_ping_interval_seconds if is_streaming_request else None),
+    request=request,
     )
 
 
@@ -2565,6 +2567,7 @@ async def azure_proxy_route(
                     ping_interval_seconds=(
                         litellm.sse_keepalive_ping_interval_seconds if is_streaming_request else None
                     ),
+                request=request,
                 )
             elif is_vector_store_index:
                 # get the api key from the provider config

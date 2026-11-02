@@ -1269,6 +1269,58 @@ def _sse_error_frames(error_obj: Mapping[str, object]) -> tuple[str, str]:
     return f"data: {json.dumps({'error': error_obj}, default=str)}\n\n", "data: [DONE]\n\n"
 
 
+_ANTHROPIC_ERROR_TYPES: Final[Mapping[int, str]] = MappingProxyType(
+    {
+        400: "invalid_request_error",
+        401: "authentication_error",
+        403: "permission_error",
+        404: "not_found_error",
+        413: "request_too_large",
+        429: "rate_limit_error",
+        500: "api_error",
+        529: "overloaded_error",
+    }
+)
+
+
+def _streams_anthropic_events(request: Request | None) -> bool:
+    """Whether the caller reads Anthropic-shaped SSE.
+
+    An Anthropic client raises only on an `event: error` frame; a bare `data:` frame carrying an
+    error object is skipped as an unknown event, so the failure never reaches it.
+    """
+    if request is None:
+        return False
+    path: Final = request.url.path.rstrip("/")
+    return path.endswith("/v1/messages") or "/anthropic" in path
+
+
+def _anthropic_sse_error_frames(error_obj: Mapping[str, object]) -> tuple[str, ...]:
+    """The `error` event an Anthropic stream ends with once it can no longer raise.
+
+    No `data: [DONE]` terminator: Anthropic streams do not send one.
+    """
+    try:
+        status_code: Final = int(str(error_obj.get("code") or 500))
+    except ValueError:
+        status_code = 500
+    event: Final = {
+        "type": "error",
+        "error": {
+            "type": _ANTHROPIC_ERROR_TYPES.get(status_code, "api_error"),
+            "message": str(error_obj.get("message") or "stream failed after the response was opened"),
+        },
+    }
+    return (f"event: error" + chr(10) + "data: " + json.dumps(event, default=str) + chr(10) + chr(10),)
+
+
+def _late_failure_frames(error_obj: Mapping[str, object], request: Request | None) -> tuple[str, ...]:
+    """Pick the frame convention of whoever is reading, not of whoever wrote the error."""
+    if _streams_anthropic_events(request):
+        return _anthropic_sse_error_frames(error_obj)
+    return _sse_error_frames(error_obj)
+
+
 def _sse_stream_headers(headers: Mapping[str, str]) -> Mapping[str, str]:
     """`headers` plus the two that stop reverse proxies from buffering SSE (issue #28384)."""
     return MappingProxyType({**headers, **_TTFT_KEEPALIVE_HEADERS})
@@ -1386,7 +1438,7 @@ async def create_response(
         error_status, error_obj = sse_error_payload(e)
 
         async def error_gen_message() -> AsyncGenerator[str, None]:
-            for frame in _sse_error_frames(error_obj):
+            for frame in _late_failure_frames(error_obj, request):
                 yield frame
 
         return StreamingResponse(
@@ -1517,6 +1569,7 @@ async def open_sse_before_first_byte(
     ping_interval_seconds: float | str | None,
     media_type: str = "text/event-stream",
     on_late_failure: Callable[[Exception], Awaitable[HTTPException | None]] | None = None,
+    request: Request | None = None,
 ) -> _LateResponseT | StreamingResponse:
     """Write SSE keepalive comments while the upstream LLM call is still in flight.
 
@@ -1563,7 +1616,7 @@ async def open_sse_before_first_byte(
                 # also gets to sanitize what reaches the client, by returning or
                 # raising a replacement, so its answer decides the frame.
                 _, error_obj = sse_error_payload(await _sanitized_late_failure(exc, on_late_failure))
-                for frame in _sse_error_frames(error_obj):
+                for frame in _late_failure_frames(error_obj, request):
                     yield frame.encode()
                 return
             async for chunk in _relay_late_response(produced):
@@ -3007,6 +3060,7 @@ class ProxyBaseLLMRequestProcessing:
             ),
             ping_interval_seconds=ttft_keepalive_interval(self.data, llm_router),
             on_late_failure=_audit_late_failure,
+        request=request,
         )
 
     async def _process_llm_request(

@@ -2484,6 +2484,7 @@ def create_pass_through_route(
             return await open_sse_before_first_byte(
                 _relay(),
                 ping_interval_seconds=(litellm.sse_keepalive_ping_interval_seconds if is_stream else None),
+            request=request,
             )
 
     setattr(endpoint_func, LITELLM_PASS_THROUGH_ENDPOINT_MARKER, True)

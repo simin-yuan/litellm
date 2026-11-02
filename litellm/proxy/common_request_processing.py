@@ -1311,7 +1311,7 @@ def _anthropic_sse_error_frames(error_obj: Mapping[str, object]) -> tuple[str, .
             "message": str(error_obj.get("message") or "stream failed after the response was opened"),
         },
     }
-    return (f"event: error" + chr(10) + "data: " + json.dumps(event, default=str) + chr(10) + chr(10),)
+    return (f"event: error\ndata: {json.dumps(event, default=str)}\n\n",)
 
 
 def _late_failure_frames(error_obj: Mapping[str, object], request: Request | None) -> tuple[str, ...]:
@@ -3060,7 +3060,7 @@ class ProxyBaseLLMRequestProcessing:
             ),
             ping_interval_seconds=ttft_keepalive_interval(self.data, llm_router),
             on_late_failure=_audit_late_failure,
-        request=request,
+            request=request,
         )
 
     async def _process_llm_request(

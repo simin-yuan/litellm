@@ -1291,8 +1291,10 @@ def _streams_anthropic_events(request: Request | None) -> bool:
     """
     if request is None:
         return False
-    path: Final = request.url.path.rstrip("/")
-    return path.endswith("/v1/messages") or "/anthropic" in path
+    path: Final = getattr(getattr(request, "url", None), "path", None)
+    if not isinstance(path, str):
+        return False
+    return path.rstrip("/").endswith("/v1/messages") or "/anthropic" in path
 
 
 def _anthropic_sse_error_frames(error_obj: Mapping[str, object]) -> tuple[str, ...]:

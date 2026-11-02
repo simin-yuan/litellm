@@ -7,6 +7,8 @@ event and is skipped, so a failure delivered that way never reaches the caller.
 from __future__ import annotations
 
 import json
+from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 from starlette.requests import Request
@@ -31,6 +33,16 @@ def test_anthropic_paths_are_recognised() -> None:
 def test_openai_paths_are_left_alone() -> None:
     assert not _streams_anthropic_events(_request("/v1/chat/completions"))
     assert not _streams_anthropic_events(None)
+
+
+def test_a_request_without_a_real_path_is_not_anthropic() -> None:
+    """A mocked or partial request must not be read as an Anthropic caller."""
+
+    class _MockedRequest:
+        url = MagicMock()
+
+    assert not _streams_anthropic_events(cast(Request, _MockedRequest()))
+    assert not _streams_anthropic_events(cast(Request, MagicMock()))
 
 
 def test_anthropic_frame_is_an_error_event_without_done() -> None:

@@ -1539,6 +1539,7 @@ async def open_sse_before_first_byte(
     media_type: str = "text/event-stream",
     on_late_failure: Callable[[Exception], Awaitable[HTTPException | None]] | None = None,
     late_failure_frames: Callable[[Exception], tuple[str, ...]] = _openai_late_failure_frames,
+    late_response_frames: Callable[[Response], Awaitable[tuple[str, ...]]] | None = None,
 ) -> _LateResponseT | StreamingResponse:
     """Write SSE keepalive comments while the upstream LLM call is still in flight.
 
@@ -1586,6 +1587,15 @@ async def open_sse_before_first_byte(
                 # raising a replacement, so its answer decides the frame.
                 for frame in late_failure_frames(await _sanitized_late_failure(exc, on_late_failure)):
                     yield frame.encode()
+                return
+            if late_response_frames is not None and produced.status_code >= 400:
+                # The upstream answered with an error status after the keepalive had
+                # already committed a 200. Those bytes cannot be relayed as they are:
+                # a caller that speaks a different stream protocol reads them as an
+                # unknown event and treats the truncated stream as a completed turn.
+                for frame in await late_response_frames(produced):
+                    yield frame.encode()
+                await _aclose_late_response(produced)
                 return
             async for chunk in _relay_late_response(produced):
                 yield chunk

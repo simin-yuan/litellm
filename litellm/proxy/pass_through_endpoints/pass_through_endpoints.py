@@ -109,6 +109,8 @@ from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_request_processing import (
     ProxyBaseLLMRequestProcessing,
+    _anthropic_late_failure_frames,
+    _openai_late_failure_frames,
     log_llm_api_exception,
     open_sse_before_first_byte,
     resolve_litellm_call_id,
@@ -1156,6 +1158,35 @@ async def _log_passthrough_upstream_failure(
                 exc_info=True,
             )
     return relay_response
+
+
+async def _anthropic_late_response_frames(response: Response) -> tuple[str, ...]:
+    """Turn an upstream error body into the frame an Anthropic stream client raises on.
+
+    A passthrough stream keeps relaying upstream bytes, so an upstream 4xx/5xx that
+    arrives after the keepalive committed a 200 would otherwise reach the caller as
+    a bare JSON chunk inside an event stream, which it reads as a normal end.
+    """
+    from litellm.anthropic_interface.exceptions import anthropic_error_sse_frame
+
+    if isinstance(response, StreamingResponse):
+        chunks = [
+            chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk) async for chunk in response.body_iterator
+        ]
+        body: Final = b"".join(chunks)
+    else:
+        body: Final = bytes(response.body or b"")
+    detail: Final = body.decode("utf-8", "replace")
+    message: Final = detail
+    try:
+        parsed: Final = json.loads(detail)
+        if isinstance(parsed, Mapping):
+            error_obj: Final = parsed.get("error")
+            if isinstance(error_obj, Mapping) and isinstance(error_obj.get("message"), str):
+                message = error_obj["message"]
+    except ValueError:
+        pass
+    return (anthropic_error_sse_frame(status_code=response.status_code, raw_message=message),)
 
 
 async def _relay_reporting_failures(
@@ -2313,6 +2344,7 @@ def create_pass_through_route(
     cost_per_request: float | None = None,
     custom_llm_provider: str | None = None,
     is_streaming_request: bool | None = False,
+    answers_as_anthropic: bool = False,
     query_params: dict | None = None,
     default_query_params: dict | None = None,
     guardrails: dict[str, object] | None = None,
@@ -2484,6 +2516,10 @@ def create_pass_through_route(
             return await open_sse_before_first_byte(
                 _relay(),
                 ping_interval_seconds=(litellm.sse_keepalive_ping_interval_seconds if is_stream else None),
+                late_failure_frames=_anthropic_late_failure_frames
+                if answers_as_anthropic
+                else _openai_late_failure_frames,
+                late_response_frames=_anthropic_late_response_frames if answers_as_anthropic else None,
             )
 
     setattr(endpoint_func, LITELLM_PASS_THROUGH_ENDPOINT_MARKER, True)
